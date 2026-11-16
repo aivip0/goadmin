@@ -23,7 +23,7 @@ import (
 
 const (
 	defaultRepo      = "aivip0/goadmin"
-	cliVersion       = "0.1.1"
+	cliVersion       = "0.1.2"
 	maxArchiveBytes  = 64 << 20
 	maxExpandedBytes = 128 << 20
 )
@@ -36,12 +36,6 @@ var (
 	secretKeys         = []string{"POSTGRES_PASSWORD", "CSRF_SECRET", "SETTINGS_ENCRYPTION_KEY", "PLUGIN_CONFIG_ENCRYPTION_KEY"}
 	releaseClient      = &http.Client{Timeout: 90 * time.Second}
 )
-
-type release struct {
-	TagName    string `json:"tag_name"`
-	Prerelease bool   `json:"prerelease"`
-	Draft      bool   `json:"draft"`
-}
 
 func main() {
 	if len(os.Args) == 1 {
@@ -331,7 +325,7 @@ func resolveSource(sourceDir, requestedVersion string) (string, string, func(), 
 }
 
 func latestRelease() (string, error) {
-	resp, err := releaseGET("https://api.github.com/repos/" + defaultRepo + "/releases/latest")
+	resp, err := releaseGET("https://github.com/" + defaultRepo + "/releases/latest")
 	if err != nil {
 		return "", fmt.Errorf("find latest stable release: %w", err)
 	}
@@ -339,14 +333,19 @@ func latestRelease() (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("find latest stable release: GitHub returned %s", resp.Status)
 	}
-	var item release
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&item); err != nil {
-		return "", err
+	if resp.Request == nil || resp.Request.URL == nil {
+		return "", errors.New("latest release response has no final URL")
 	}
-	if !semverPattern.MatchString(item.TagName) || item.Draft || item.Prerelease || strings.Contains(strings.Split(item.TagName, "+")[0], "-") {
-		return "", fmt.Errorf("GitHub latest release has invalid tag %q", item.TagName)
+	finalURL := resp.Request.URL
+	prefix := "/" + defaultRepo + "/releases/tag/"
+	if finalURL.Scheme != "https" || finalURL.Host != "github.com" || !strings.HasPrefix(finalURL.Path, prefix) {
+		return "", errors.New("GitHub latest release resolved outside the expected repository tag page")
 	}
-	return item.TagName, nil
+	tag := strings.TrimPrefix(finalURL.Path, prefix)
+	if strings.Contains(tag, "/") || !semverPattern.MatchString(tag) || strings.Contains(strings.Split(tag, "+")[0], "-") {
+		return "", fmt.Errorf("GitHub latest release has invalid tag %q", tag)
+	}
+	return tag, nil
 }
 
 func downloadRelease(version string) (string, error) {

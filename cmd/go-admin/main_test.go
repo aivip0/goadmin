@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -259,9 +260,21 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 func TestLatestReleaseAndNetworkFailure(t *testing.T) {
 	old := releaseClient
 	t.Cleanup(func() { releaseClient = old })
-	for _, body := range []string{`{"tag_name":"main"}`, `{"tag_name":"v1.2.3","prerelease":true}`, `{"tag_name":"v1.2.3","draft":true}`, `{"tag_name":"v1.2.3-rc1"}`} {
+	for _, finalURL := range []string{
+		"https://github.com/aivip0/goadmin/releases/tag/main",
+		"https://github.com/aivip0/goadmin/releases/tag/v1.2.3-rc1",
+		"https://github.com/other/repo/releases/tag/v1.2.3",
+		"https://example.com/aivip0/goadmin/releases/tag/v1.2.3",
+		"https://github.com/aivip0/goadmin/releases/tag/v1.2.3/extra",
+	} {
 		releaseClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+			u, err := url.Parse(finalURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := r.Clone(r.Context())
+			request.URL = u
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("release page")), Request: request}, nil
 		})}
 		if _, err := latestRelease(); err == nil {
 			t.Fatal("unstable release accepted")
@@ -271,7 +284,10 @@ func TestLatestReleaseAndNetworkFailure(t *testing.T) {
 		if r.Header.Get("User-Agent") == "" {
 			t.Fatal("missing user-agent")
 		}
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"tag_name":"v1.2.3"}`))}, nil
+		u, _ := url.Parse("https://github.com/aivip0/goadmin/releases/tag/v1.2.3")
+		request := r.Clone(r.Context())
+		request.URL = u
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("release page")), Request: request}, nil
 	})}
 	if version, err := latestRelease(); err != nil || version != "v1.2.3" {
 		t.Fatal(version, err)

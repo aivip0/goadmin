@@ -23,7 +23,7 @@ Install the CLI from a tagged release:
 
 ```sh
 go install github.com/aivip0/goadmin/cmd/go-admin@latest
-go-admin new my-admin --version v0.1.1
+go-admin new my-admin --version v0.1.2
 cd my-admin
 go-admin doctor
 go-admin init

@@ -8,7 +8,7 @@ project with the `go-admin` CLI.
 ```sh
 go install github.com/aivip0/goadmin/cmd/go-admin@latest
 go-admin version
-go-admin new my-admin --version v0.1.1
+go-admin new my-admin --version v0.1.2
 cd my-admin
 go-admin doctor
 go-admin init
@@ -60,5 +60,5 @@ For offline/local development of the generator:
 ```sh
 go build -o /tmp/go-admin ./cmd/go-admin
 cd /tmp
-/tmp/go-admin new local-test --source-dir /absolute/path/to/goadmin --version v0.1.1
+/tmp/go-admin new local-test --source-dir /absolute/path/to/goadmin --version v0.1.2
 ```

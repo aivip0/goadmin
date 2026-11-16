@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.2] - 2026-11-16
+
+- Resolve the latest stable template through GitHub's stable-release redirect,
+  avoiding dependence on the unauthenticated GitHub API rate limit.
+- Validate that the redirect ends at this repository's stable semantic-version tag.
+
 ## [0.1.1] - 2026-11-16
 
 - Accept GitHub release tarballs containing a PAX global metadata header while
