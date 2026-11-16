@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"encoding/base64"
 	"encoding/json"
@@ -177,6 +178,281 @@ func TestNewCommandIsolationAndRepeat(t *testing.T) {
 	if pkg["name"] != "new-project-frontend" {
 		t.Fatal("lockfile name mismatch")
 	}
+}
+
+func TestBuildUpgradePlanDetectsConflictsAndPreservesLocalFiles(t *testing.T) {
+	base, target, project := t.TempDir(), t.TempDir(), t.TempDir()
+	writeUpgradeFixture(t, base, map[string]string{
+		"update.txt":       "old template\n",
+		"local-edit.txt":   "same upstream\n",
+		"local-delete.txt": "old value\n",
+		"removed-upstream": "old file\n",
+		"conflicting-edit": "base\n",
+	})
+	writeUpgradeFixture(t, target, map[string]string{
+		"update.txt":        "new template\n",
+		"local-edit.txt":    "same upstream\n",
+		"local-delete.txt":  "new value\n",
+		"conflicting-edit":  "upstream edit\n",
+		"new-upstream-file": "new file\n",
+	})
+	writeUpgradeFixture(t, project, map[string]string{
+		".go-admin-template": "v1.0.0\n",
+		".env":               "APP_NAME=Private\nCSRF_SECRET=not-for-upgrade\n",
+		"update.txt":         "old template\n",
+		"local-edit.txt":     "user customization\n",
+		"removed-upstream":   "keep user file\n",
+		"conflicting-edit":   "local edit\n",
+	})
+
+	plan, err := buildUpgradePlan(project, base, target, "v1.0.0", "v1.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.updates) != 1 || len(plan.adds) != 1 || len(plan.conflicts) != 1 {
+		t.Fatalf("unexpected plan: updates=%v adds=%v conflicts=%v", upgradePaths(plan.updates), upgradePaths(plan.adds), plan.conflicts)
+	}
+	if !containsString(plan.preserved, "local-edit.txt") || !containsString(plan.preserved, "local-delete.txt (locally deleted)") {
+		t.Fatalf("local changes were not reported as preserved: %v", plan.preserved)
+	}
+	if !containsString(plan.removed, "removed-upstream") {
+		t.Fatalf("upstream deletion was not retained/reported: %v", plan.removed)
+	}
+	if err := applyUpgradePlan(project, plan); err == nil {
+		t.Fatal("conflicted plan was applied")
+	}
+	marker, _ := os.ReadFile(filepath.Join(project, ".go-admin-template"))
+	if string(marker) != "v1.0.0\n" {
+		t.Fatalf("conflicted upgrade advanced marker: %q", marker)
+	}
+	privateEnv, _ := os.ReadFile(filepath.Join(project, ".env"))
+	if string(privateEnv) != "APP_NAME=Private\nCSRF_SECRET=not-for-upgrade\n" {
+		t.Fatalf("upgrade changed .env: %q", privateEnv)
+	}
+}
+
+func TestApplyUpgradePlanAndRepeatAreSafe(t *testing.T) {
+	base, target, project := t.TempDir(), t.TempDir(), t.TempDir()
+	writeUpgradeFixture(t, base, map[string]string{
+		"backend/value.go": "old\n",
+		"local.txt":        "same upstream\n",
+		"deleted-local":    "base\n",
+		"removed-upstream": "base\n",
+	})
+	writeUpgradeFixture(t, target, map[string]string{
+		"backend/value.go": "new\n",
+		"local.txt":        "same upstream\n",
+		"deleted-local":    "changed upstream\n",
+		"added.txt":        "new file\n",
+	})
+	writeUpgradeFixture(t, project, map[string]string{
+		".go-admin-template": "v1.0.0\n",
+		".env":               "APP_NAME=My Admin\nCSRF_SECRET=keep-me\n",
+		"backend/value.go":   "old\n",
+		"local.txt":          "my local version\n",
+		"removed-upstream":   "retain despite upstream deletion\n",
+	})
+
+	plan, err := buildUpgradePlan(project, base, target, "v1.0.0", "v1.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.conflicts) != 0 {
+		t.Fatalf("unexpected conflicts: %v", plan.conflicts)
+	}
+	if err := applyUpgradePlan(project, plan); err != nil {
+		t.Fatal(err)
+	}
+	for path, expected := range map[string]string{
+		"backend/value.go":   "new\n",
+		"local.txt":          "my local version\n",
+		"removed-upstream":   "retain despite upstream deletion\n",
+		".go-admin-template": "v1.1.0\n",
+		".env":               "APP_NAME=My Admin\nCSRF_SECRET=keep-me\n",
+	} {
+		data, err := os.ReadFile(filepath.Join(project, path))
+		if err != nil || string(data) != expected {
+			t.Fatalf("%s = %q, %v; want %q", path, data, err, expected)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(project, "deleted-local")); !os.IsNotExist(err) {
+		t.Fatalf("locally deleted file was restored: %v", err)
+	}
+	added, err := os.ReadFile(filepath.Join(project, "added.txt"))
+	if err != nil || string(added) != "new file\n" {
+		t.Fatalf("new upstream file missing or wrong: %q %v", added, err)
+	}
+
+	repeat, err := buildUpgradePlan(project, target, target, "v1.1.0", "v1.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repeat.updates) != 0 || len(repeat.adds) != 0 || len(repeat.conflicts) != 0 {
+		t.Fatalf("same-version scan was not idempotent: %+v", repeat)
+	}
+}
+
+func TestUpgradeRefusesChangedFileAndSymlinkParent(t *testing.T) {
+	base, target, project := t.TempDir(), t.TempDir(), t.TempDir()
+	writeUpgradeFixture(t, base, map[string]string{"value.txt": "base\n"})
+	writeUpgradeFixture(t, target, map[string]string{"value.txt": "upstream\n"})
+	writeUpgradeFixture(t, project, map[string]string{".go-admin-template": "v1.0.0\n", "value.txt": "base\n"})
+	plan, err := buildUpgradePlan(project, base, target, "v1.0.0", "v1.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(project, "value.txt"), "edited after preview\n")
+	if err := applyUpgradePlan(project, plan); err == nil {
+		t.Fatal("upgrade overwrote a file changed after planning")
+	}
+	data, _ := os.ReadFile(filepath.Join(project, "value.txt"))
+	marker, _ := os.ReadFile(filepath.Join(project, ".go-admin-template"))
+	if string(data) != "edited after preview\n" || string(marker) != "v1.0.0\n" {
+		t.Fatalf("stale plan overwrote project state: file=%q marker=%q", data, marker)
+	}
+
+	external := t.TempDir()
+	if err := os.Symlink(external, filepath.Join(project, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeUpgradeFile(project, upgradeFile{path: "linked/created.txt", content: []byte("unsafe")}, false); err == nil {
+		t.Fatal("upgrade followed a symlinked project directory")
+	}
+	if _, err := os.Stat(filepath.Join(external, "created.txt")); !os.IsNotExist(err) {
+		t.Fatalf("write escaped through symlink: %v", err)
+	}
+}
+
+func TestStableVersionComparison(t *testing.T) {
+	for _, tc := range []struct {
+		left, right string
+		want        int
+	}{{"v1.10.0", "v1.9.9", 1}, {"v1.2.0", "v1.2.1", -1}, {"v2.0.0", "v2.0.0", 0}} {
+		got, err := compareStableVersions(tc.left, tc.right)
+		if err != nil || got != tc.want {
+			t.Fatalf("compareStableVersions(%q,%q) = %d, %v", tc.left, tc.right, got, err)
+		}
+	}
+	for _, invalid := range []string{"main", "v1.0.0-rc.1", "1.0.0", "v1.0"} {
+		if _, err := compareStableVersions(invalid, "v1.0.0"); err == nil {
+			t.Fatalf("accepted unstable version %q", invalid)
+		}
+	}
+}
+
+func TestUpgradeCommandUsesReleaseBaselineAndKeepsProjectConfig(t *testing.T) {
+	oldTemplate := fixture(t)
+	mustWrite(t, filepath.Join(oldTemplate, "VERSION"), "0.1.2\n")
+	newTemplate := fixture(t)
+	mustWrite(t, filepath.Join(newTemplate, "VERSION"), "0.1.3\n")
+	mustWrite(t, filepath.Join(newTemplate, "backend", "main.go"), "package main\n// upstream template update\n")
+	mustWrite(t, filepath.Join(newTemplate, "backend", "internal", "new_feature.go"), "package backend\n// new upstream file\n")
+
+	project := t.TempDir()
+	if err := materializeTemplate(oldTemplate, project, "example.com/upgrade-project", "Upgrade Project"); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(project, ".go-admin-template"), "v0.1.2\n")
+	envBefore, err := os.ReadFile(filepath.Join(project, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := makeReleaseArchive(t, oldTemplate, "goadmin-v0.1.2")
+	oldClient := releaseClient
+	releaseClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/aivip0/goadmin/archive/refs/tags/v0.1.2.tar.gz" {
+			return nil, errors.New("unexpected release archive request: " + request.URL.String())
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(archive)), Request: request}, nil
+	})}
+	t.Cleanup(func() { releaseClient = oldClient })
+	t.Chdir(project)
+	if err := commandUpgrade([]string{"--version", "v0.1.3", "--source-dir", newTemplate, "--apply"}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := os.ReadFile(filepath.Join(project, "backend", "main.go"))
+	if err != nil || !strings.Contains(string(updated), "upstream template update") {
+		t.Fatalf("upstream change not installed: %q, %v", updated, err)
+	}
+	added, err := os.ReadFile(filepath.Join(project, "backend", "internal", "new_feature.go"))
+	if err != nil || !strings.Contains(string(added), "new upstream file") {
+		t.Fatalf("new upstream file not installed: %q, %v", added, err)
+	}
+	envAfter, err := os.ReadFile(filepath.Join(project, ".env"))
+	if err != nil || !bytes.Equal(envBefore, envAfter) {
+		t.Fatalf("upgrade changed .env: %v", err)
+	}
+	marker, err := os.ReadFile(filepath.Join(project, ".go-admin-template"))
+	if err != nil || string(marker) != "v0.1.3\n" {
+		t.Fatalf("template marker not advanced last: %q, %v", marker, err)
+	}
+}
+
+func writeUpgradeFixture(t *testing.T, root string, files map[string]string) {
+	t.Helper()
+	for path, content := range files {
+		mustWrite(t, filepath.Join(root, filepath.FromSlash(path)), content)
+	}
+}
+
+func upgradePaths(files []upgradeFile) []string {
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.path)
+	}
+	return paths
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func makeReleaseArchive(t *testing.T, root, topDirectory string) []byte {
+	t.Helper()
+	var archive bytes.Buffer
+	compressed := gzip.NewWriter(&archive)
+	tarWriter := tar.NewWriter(compressed)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == root {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		name := filepath.ToSlash(filepath.Join(topDirectory, relative))
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return tarWriter.WriteHeader(&tar.Header{Name: name + "/", Typeflag: tar.TypeDir, Mode: int64(info.Mode().Perm())})
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("test release contains a non-regular file")
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := tarWriter.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: int64(info.Mode().Perm()), Size: int64(len(content))}); err != nil {
+			return err
+		}
+		_, err = tarWriter.Write(content)
+		return err
+	})
+	if err := errors.Join(err, tarWriter.Close(), compressed.Close()); err != nil {
+		t.Fatal(err)
+	}
+	return archive.Bytes()
 }
 
 func TestInputAndSourceValidation(t *testing.T) {

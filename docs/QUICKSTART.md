@@ -2,7 +2,7 @@
 
 ```sh
 go install github.com/aivip0/goadmin/cmd/go-admin@latest
-go-admin new my-admin --version v0.1.2
+go-admin new my-admin --version v0.1.3
 cd my-admin
 go-admin doctor
 go-admin init
@@ -31,6 +31,13 @@ API stores sessions server-side in PostgreSQL.
 The CLI runs migrations only when `init --database` names the exact configured
 target. Repeating initialization preserves configuration and uses the migration
 version table to avoid applying SQL again. There is no default admin/password.
+
+To update generated project source from a later template release, run
+`go-admin upgrade --version vX.Y.Z` from the project root to preview the
+three-way update, then add `--apply` only after reviewing it. Local edits and
+deletions are preserved, conflicts stop the update, `.env` is never changed,
+and no database migration or dependency installation is run. See
+`docs/INSTALL.md` for details.
 
 Media starts disabled until its private root is explicitly bound. For a local
 process, create a private absolute directory (`mkdir -m 700 /absolute/private/media`),

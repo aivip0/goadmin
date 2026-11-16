@@ -8,7 +8,7 @@ project with the `go-admin` CLI.
 ```sh
 go install github.com/aivip0/goadmin/cmd/go-admin@latest
 go-admin version
-go-admin new my-admin --version v0.1.2
+go-admin new my-admin --version v0.1.3
 cd my-admin
 go-admin doctor
 go-admin init
@@ -21,6 +21,32 @@ tag; there is no fallback to the moving default branch. `--module` sets the Go
 module, and `--name` sets a safe ASCII display name. The generator
 refuses to overwrite a target directory and creates fresh secrets in `.env`
 with mode `0600`. The generated project is independent of the source checkout.
+
+## Updating a generated project's template
+
+From the generated project's root, first preview a template update:
+
+```sh
+go-admin upgrade --version vX.Y.Z
+```
+
+Omit `--version` to select the latest stable release. Previewing changes no
+files. Apply a reviewed, conflict-free update explicitly:
+
+```sh
+go-admin upgrade --version vX.Y.Z --apply
+```
+
+The updater uses the project's recorded `.go-admin-template` release and a
+three-way comparison. It updates only files that still match the old template,
+adds new upstream files only when the destination is unused, preserves local
+edits and deletions, and refuses files changed both locally and upstream.
+Upstream-removed files are retained rather than deleted. `.env` is never
+updated. The version marker advances last, so an interrupted update can be
+reviewed and retried. Commit or back up the project first. The command does not
+install dependencies or execute database migrations; handle those separately
+after reviewing that release's notes. Database schema migration is a distinct,
+explicitly guarded operation described below.
 
 ## Source checkout
 
@@ -60,5 +86,5 @@ For offline/local development of the generator:
 ```sh
 go build -o /tmp/go-admin ./cmd/go-admin
 cd /tmp
-/tmp/go-admin new local-test --source-dir /absolute/path/to/goadmin --version v0.1.2
+/tmp/go-admin new local-test --source-dir /absolute/path/to/goadmin --version v0.1.3
 ```

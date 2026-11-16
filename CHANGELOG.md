@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.3] - 2026-11-16
+
+- Add `go-admin upgrade` to preview and apply conflict-aware updates to generated
+  projects using a three-way comparison against the recorded template release.
+- Preserve `.env`, local edits and deletions; retain upstream-removed files;
+  refuse conflicts and do not run database migrations or install dependencies.
+- Add upgrade safety and idempotency tests and document the update workflow.
+
 ## [0.1.2] - 2026-11-16
 
 - Resolve the latest stable template through GitHub's stable-release redirect,
