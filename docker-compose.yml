@@ -1,0 +1,147 @@
+name: goadmin-kit
+
+x-backend-environment: &backend-environment
+  APP_ENV: ${APP_ENV:-development}
+  APP_NAME: ${APP_NAME:-GoAdmin Kit}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  API_HOST: 0.0.0.0
+  API_PORT: 8080
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  POSTGRES_USER: ${POSTGRES_USER:-goadmin}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run make setup first}
+  POSTGRES_DB: ${POSTGRES_DB:-goadmin}
+  POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-disable}
+  DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-10}
+  DB_MAX_IDLE_CONNS: ${DB_MAX_IDLE_CONNS:-5}
+  DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-5s}
+  HEALTH_TIMEOUT: ${HEALTH_TIMEOUT:-2s}
+  PUBLIC_ORIGINS: ${PUBLIC_ORIGINS:-http://127.0.0.1:3000,http://localhost:3000}
+  TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+  COOKIE_SECURE: ${COOKIE_SECURE:-false}
+  COOKIE_SAME_SITE: ${COOKIE_SAME_SITE:-lax}
+  SESSION_TTL: ${SESSION_TTL:-12h}
+  SESSION_IDLE_TTL: ${SESSION_IDLE_TTL:-30m}
+  CSRF_TTL: ${CSRF_TTL:-1h}
+  CSRF_SECRET: ${CSRF_SECRET:-}
+  SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY:-}
+  PLUGIN_CONFIG_ENCRYPTION_KEY: ${PLUGIN_CONFIG_ENCRYPTION_KEY:-}
+  # Trusted packages must be mounted separately read-only before enabling this.
+  PLUGIN_PACKAGE_ROOT: ${PLUGIN_PACKAGE_ROOT:-}
+  PLUGIN_TRUSTED_PUBLIC_KEYS: ${PLUGIN_TRUSTED_PUBLIC_KEYS:-}
+  # Explicitly opt in only after media-bind; first boot still initializes admin normally.
+  MEDIA_STORAGE_ROOT: ${MEDIA_STORAGE_ROOT:-}
+  MEDIA_MIN_FREE_BYTES: ${MEDIA_MIN_FREE_BYTES:-134217728}
+  # Existing databases fail closed unless the operator explicitly confirms
+  # the exact target/version and records a separately verified backup.
+  MIGRATION_CONFIRM_DATABASE: ${MIGRATION_CONFIRM_DATABASE:-}
+  MIGRATION_CONFIRM_FROM_VERSION: ${MIGRATION_CONFIRM_FROM_VERSION:-}
+  MIGRATION_CONFIRM_TO_VERSION: ${MIGRATION_CONFIRM_TO_VERSION:-}
+  MIGRATION_BACKUP_REFERENCE: ${MIGRATION_BACKUP_REFERENCE:-}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: '3'
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-goadmin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run make setup first}
+      POSTGRES_DB: ${POSTGRES_DB:-goadmin}
+      TZ: UTC
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+    logging: *logging
+
+  migrate:
+    image: goadmin-kit-migrate:local
+    build:
+      context: .
+      dockerfile: deploy/docker/backend.Dockerfile
+    entrypoint: [/app/migrate]
+    command: [up]
+    environment: *backend-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+    logging: *logging
+
+  media-init:
+    image: goadmin-kit-api:local
+    build:
+      context: .
+      dockerfile: deploy/docker/backend.Dockerfile
+    user: root
+    entrypoint: [/bin/sh, -ec]
+    command: ['test -d /var/lib/goadmin/media && test ! -L /var/lib/goadmin/media && chown app:app /var/lib/goadmin/media && chmod 0700 /var/lib/goadmin/media']
+    volumes:
+      - media_data:/var/lib/goadmin/media
+    restart: 'no'
+    logging: *logging
+
+  api:
+    image: goadmin-kit-api:local
+    build:
+      context: .
+      dockerfile: deploy/docker/backend.Dockerfile
+    environment: *backend-environment
+    volumes:
+      - media_data:/var/lib/goadmin/media
+    ports:
+      - "127.0.0.1:${API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      media-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, /app/healthcheck]
+      interval: 5s
+      timeout: 4s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+    init: true
+    logging: *logging
+
+  frontend:
+    image: goadmin-kit-frontend:local
+    build:
+      context: .
+      dockerfile: deploy/docker/frontend.Dockerfile
+    environment:
+      API_INTERNAL_URL: http://api:8080
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 4s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+    init: true
+    logging: *logging
+
+volumes:
+  postgres_data:
+  media_data:

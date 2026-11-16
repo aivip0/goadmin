@@ -1,0 +1,11 @@
+BEGIN;
+DROP TABLE role_menus;
+DROP TABLE menus;
+DROP TABLE role_permissions;
+DROP TABLE user_roles;
+DROP TABLE permissions;
+DROP TABLE roles;
+DROP TABLE admin_sessions;
+DROP TABLE admin_users;
+UPDATE app_metadata SET schema_version = 1, updated_at = CURRENT_TIMESTAMP WHERE component = 'core';
+COMMIT;

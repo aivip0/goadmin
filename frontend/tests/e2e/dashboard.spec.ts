@@ -1,0 +1,42 @@
+import { expect, test } from '@playwright/test';
+
+test.skip(process.env.E2E_DASHBOARD !== '1', 'Requires isolated real PostgreSQL and Go API');
+
+test('real dashboard statistics, UTC trends and responsive navigation', async ({ page }, testInfo) => {
+  await page.goto('/login');
+  await page.getByLabel('用户名').fill(process.env.E2E_ADMIN_USER!);
+  await page.getByLabel('密码', { exact: true }).fill(process.env.E2E_ADMIN_PASSWORD!);
+  await page.getByRole('button', {name:'登录',exact:true}).click();
+  await expect(page).toHaveURL(/\/admin$/);
+  await expect(page.getByRole('heading',{name:'管理概览'})).toBeVisible();
+  const cards=page.getByRole('region',{name:'管理统计'});
+  await expect(cards.getByRole('heading',{name:'管理员'})).toBeVisible();
+  const summary=await page.request.get('/api/v1/admin/dashboard/summary');
+  expect(summary.status()).toBe(200);
+  const actual=(await summary.json()).data as {administrators:number;active_administrators:number;roles:number;active_roles:number;security_events:number;service:string};
+  expect(actual.administrators).toBeGreaterThanOrEqual(1);
+  expect(actual.roles).toBeGreaterThanOrEqual(2);
+  await expect(cards.getByRole('article').filter({has:page.getByRole('heading',{name:'管理员'})})).toContainText(String(actual.administrators));
+  await expect(cards.getByRole('article').filter({has:page.getByRole('heading',{name:'角色'})})).toContainText(String(actual.roles));
+  await expect(cards.getByRole('article').filter({has:page.getByRole('heading',{name:'安全事件'})})).toContainText(String(actual.security_events));
+  await expect(cards.getByRole('article').filter({has:page.getByRole('heading',{name:'服务状态'})})).toContainText('正常');
+  const trends=page.getByRole('region',{name:'安全事件趋势'});
+  await expect(trends.getByRole('img')).toHaveAttribute('aria-label',/过去 7 天/);
+  await trends.getByRole('button',{name:'30 天'}).click();
+  await expect(trends.getByRole('img')).toHaveAttribute('aria-label',/过去 30 天/);
+  const apiTrends=await page.request.get('/api/v1/admin/dashboard/trends?range=30d');
+  expect((await apiTrends.json()).data.points).toHaveLength(30);
+  const activities=await page.request.get('/api/v1/admin/dashboard/activity?page=1&page_size=10');
+  expect(activities.status()).toBe(200);
+  const list=(await activities.json()).data as {items:unknown[];total:number};
+  await expect(page.getByRole('region',{name:'最近操作'})).toContainText(`共 ${list.total} 条`);
+  await expect(page.getByRole('region',{name:'快捷导航'}).getByRole('link').first()).toBeVisible();
+  await expect(page.getByRole('button',{name:'刷新数据'})).toBeVisible();
+  await page.route('**/api/v1/admin/dashboard/summary', route => route.abort());
+  await page.getByRole('button',{name:'刷新数据'}).click();
+  await expect(page.locator('section[role="alert"]')).toContainText('无法获取仪表盘数据');
+  await page.unroute('**/api/v1/admin/dashboard/summary');
+  await page.getByRole('button',{name:'重试'}).click();
+  await expect(page.getByRole('region',{name:'管理统计'}).getByRole('heading',{name:'管理员'})).toBeVisible();
+  await page.screenshot({path:testInfo.outputPath('dashboard.png'),fullPage:true});
+});

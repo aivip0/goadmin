@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+.idea/
+.DS_Store
+node_modules/
+.next/
+out/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+backend/bin/
+*.log

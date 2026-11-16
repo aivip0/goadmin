@@ -1,0 +1,34 @@
+'use client';
+
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { Plus, Trash2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { AdminShell } from '@/components/admin-shell';
+import { adminRequest, has, type Access, type Permission, type Role } from '@/services/admin';
+
+export default function RolesPage() { return <AdminShell permission="roles:view" title="角色管理">{access => <RolesView access={access} />}</AdminShell>; }
+function RolesView({ access }: { access: Access }) {
+  const [roles, setRoles] = useState<Role[] | null>(null); const [catalog, setCatalog] = useState<Permission[]>([]); const [selected, setSelected] = useState<Role | null>(null);
+  const [creating, setCreating] = useState(false); const [editing, setEditing] = useState(false); const [code, setCode] = useState(''); const [name, setName] = useState(''); const [description, setDescription] = useState('');
+  const [chosen, setChosen] = useState<string[]>([]); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [notice, setNotice] = useState('');
+  const refresh = useCallback(async () => { try { setError(''); setRoles(await adminRequest<Role[]>('roles')); if (has(access, 'permissions:view')) setCatalog(await adminRequest<Permission[]>('permissions')); } catch (e) { setError(e instanceof Error ? e.message : '无法读取角色。'); } }, [access]);
+  useEffect(() => { queueMicrotask(() => { void refresh(); }); }, [refresh]);
+  const open = async (id: string) => { try { setError(''); const role = await adminRequest<Role>(`roles/${id}`); setSelected(role); setChosen(role.permissions.map(p => p.id)); setCode(role.code); setName(role.name); setDescription(role.description); setEditing(false); } catch (e) { setError(e instanceof Error ? e.message : '无法读取角色。'); } };
+  const act = async (fn: () => Promise<unknown>, message: string) => { setBusy(true); setError(''); setNotice(''); try { await fn(); setNotice(message); await refresh(); if (selected) await open(selected.id); } catch (e) { setError(e instanceof Error ? e.message : '操作失败。'); } finally { setBusy(false); } };
+  const create = async (e: FormEvent) => { e.preventDefault(); await act(async () => { const role = await adminRequest<Role>('roles', 'POST', { code, name, description }); setCreating(false); await open(role.id); }, '角色已创建。'); };
+  const update = async (e: FormEvent) => { e.preventDefault(); if (!selected) return; await act(async () => { await adminRequest(`roles/${selected.id}`, 'PUT', { code, name, description }); setEditing(false); }, '角色已更新。'); };
+  const assign = () => { if (!selected || !window.confirm(`确认更新 ${selected.name} 的权限？变更将立即生效。`)) return; void act(() => adminRequest(`roles/${selected.id}/permissions`, 'PUT', { permission_ids: chosen }), '角色权限已更新。'); };
+  const remove = (role: Role) => { if (!window.confirm(`确认删除 ${role.name}？必须先移除关联用户。`)) return; void act(async () => { await adminRequest(`roles/${role.id}`, 'DELETE'); setSelected(null); }, '角色已删除。'); };
+  return <div className="space-y-5"><div className="flex justify-end">{has(access, 'roles:create') && <Button onClick={() => { setCreating(true); setSelected(null); setCode(''); setName(''); setDescription(''); }}><Plus size={16} />新建角色</Button>}</div>
+    {error && <p role="alert" className="text-sm text-[var(--bad)]">{error}</p>}{notice && <p role="status" className="text-sm text-[var(--good)]">{notice}</p>}
+    {!roles ? <p role="status">正在加载角色…</p> : <div className="overflow-x-auto border border-border rounded-md"><table className="admin-table"><thead><tr><th>角色</th><th>代码</th><th>类型</th><th>状态</th><th>操作</th></tr></thead><tbody>{roles.map(role => <tr key={role.id}><td className="font-medium">{role.name}</td><td>{role.code}</td><td>{role.is_system ? '系统' : '自定义'}</td><td>{role.status === 'active' ? '启用' : '停用'}</td><td><Button variant="outline" onClick={() => void open(role.id)}>详情</Button></td></tr>)}</tbody></table>{roles.length === 0 && <p className="p-6 text-sm text-muted-foreground">暂无角色。</p>}</div>}
+    {creating && <section className="admin-panel max-w-xl"><h2 className="mb-4 font-semibold">新建角色</h2><form className="space-y-3" onSubmit={e => void create(e)}>{fields()}<Button disabled={busy} type="submit">创建</Button><Button type="button" variant="outline" className="ml-2" onClick={() => setCreating(false)}>取消</Button></form></section>}
+    {selected && <section className="admin-panel space-y-5" aria-label="角色详情"><div className="flex justify-between"><h2 className="font-semibold">{selected.name} · 角色详情</h2><Button variant="outline" onClick={() => setSelected(null)}>关闭</Button></div><p className="text-sm text-muted-foreground">{selected.code} · {selected.is_system ? '系统角色' : '自定义角色'} · {selected.description || '无描述'}</p>
+      {editing ? <form className="max-w-xl space-y-3" onSubmit={e => void update(e)}>{fields()}<Button type="submit" disabled={busy}>保存角色</Button><Button type="button" variant="outline" className="ml-2" onClick={() => setEditing(false)}>取消</Button></form> : !selected.is_system && <div className="flex gap-2">{has(access, 'roles:update') && <Button variant="outline" onClick={() => setEditing(true)}>编辑角色</Button>}{has(access, 'roles:delete') && <Button variant="outline" disabled={busy} onClick={() => remove(selected)}><Trash2 size={16} />删除角色</Button>}</div>}
+      <div><h3 className="mb-2 text-sm font-semibold">关联用户</h3><p className="text-sm text-muted-foreground">{selected.users.map(u => u.username).join('、') || '无关联用户'}</p></div>
+      <div><h3 className="mb-2 text-sm font-semibold">角色权限</h3><p className="text-sm text-muted-foreground">{selected.permissions.map(p => p.code).join('、') || '无权限'}</p></div>
+      {has(access, 'roles:assign_permissions') && access.is_super_admin && !selected.is_super_admin && <div><h3 className="mb-3 text-sm font-semibold">分配权限</h3><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{catalog.map(p => <label key={p.id} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={chosen.includes(p.id)} onChange={e => setChosen(e.target.checked ? [...chosen, p.id] : chosen.filter(id => id !== p.id))} /><span>{p.code}</span></label>)}</div><Button className="mt-4" disabled={busy} onClick={assign}>保存权限</Button></div>}
+    </section>}
+  </div>;
+  function fields() { return <><label className="block"><span className="admin-label">代码</span><input className="auth-input" required minLength={3} maxLength={64} pattern="[a-z][a-z0-9_]+" value={code} onChange={e => setCode(e.target.value)} /></label><label className="block"><span className="admin-label">名称</span><input className="auth-input" required maxLength={128} value={name} onChange={e => setName(e.target.value)} /></label><label className="block"><span className="admin-label">描述</span><input className="auth-input" maxLength={1000} value={description} onChange={e => setDescription(e.target.value)} /></label></>; }
+}
