@@ -23,7 +23,7 @@ import (
 
 const (
 	defaultRepo      = "aivip0/goadmin"
-	cliVersion       = "0.1.0"
+	cliVersion       = "0.1.1"
 	maxArchiveBytes  = 64 << 20
 	maxExpandedBytes = 128 << 20
 )
@@ -414,6 +414,10 @@ func extractTarGz(archivePath, destination string) error {
 			return fmt.Errorf("archive path escapes destination: %q", header.Name)
 		}
 		switch header.Typeflag {
+		case tar.TypeXGlobalHeader:
+			// GitHub source archives include a PAX global metadata header. It
+			// describes following entries but is not a filesystem object.
+			continue
 		case tar.TypeDir:
 			if err := os.MkdirAll(destinationPath, 0o755); err != nil {
 				return err

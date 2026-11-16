@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.1] - 2026-11-16
+
+- Accept GitHub release tarballs containing a PAX global metadata header while
+  continuing to reject links, special files and unsafe archive paths.
+- Validate the generator against the actual GitHub release archive.
+
 ## [0.1.0] - 2026-11-16
 
 - Initial public GoAdmin Kit starter baseline.

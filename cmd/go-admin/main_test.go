@@ -222,6 +222,37 @@ func TestArchiveTraversalAndLimits(t *testing.T) {
 	}
 }
 
+func TestGitHubPAXGlobalHeader(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "release.tar.gz")
+	file, err := os.Create(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(file)
+	w := tar.NewWriter(gz)
+	if err := w.WriteHeader(&tar.Header{Typeflag: tar.TypeXGlobalHeader, PAXRecords: map[string]string{"comment": "GitHub source archive"}}); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("release payload")
+	if err := w.WriteHeader(&tar.Header{Name: "goadmin-v0.1.1/README.md", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(content))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(w.Close(), gz.Close(), file.Close()); err != nil {
+		t.Fatal(err)
+	}
+	destination := t.TempDir()
+	if err := extractTarGz(archive, destination); err != nil {
+		t.Fatal(err)
+	}
+	actual, err := os.ReadFile(filepath.Join(destination, "goadmin-v0.1.1", "README.md"))
+	if err != nil || string(actual) != string(content) {
+		t.Fatalf("PAX archive entry missing or changed: %q, %v", actual, err)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
